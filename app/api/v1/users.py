@@ -37,12 +37,11 @@ class UserUpdate(BaseModel):
 @router.get("/list")
 async def list_users_basic(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    _: User = Depends(get_current_user),
 ):
-    q = select(User).where(User.is_active == True)
-    if current_user.role != "admin":
-        q = q.where(User.warehouse_id == current_user.warehouse_id)
-    rows = (await db.scalars(q.order_by(User.full_name))).all()
+    rows = (await db.scalars(
+        select(User).where(User.is_active == True).order_by(User.full_name)
+    )).all()
     return [{"id": u.id, "full_name": u.full_name, "warehouse_id": u.warehouse_id} for u in rows]
 
 
