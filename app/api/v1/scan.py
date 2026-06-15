@@ -325,6 +325,20 @@ async def _run_demands_bg(job_id: str, codes: list[str], session_batch_id: str |
                     "total": len(codes), "results": results,
                 }), ex=_JOB_TTL)
 
+        # Auto-complete the session after all demands are processed
+        if session_batch_id:
+            async with AsyncSessionLocal() as db_close:
+                await db_close.execute(
+                    update(ScanSession).where(
+                        ScanSession.batch_id == session_batch_id,
+                        ScanSession.status == "ACTIVE",
+                    ).values(
+                        status="COMPLETED",
+                        completed_at=datetime.datetime.now(datetime.timezone.utc),
+                    )
+                )
+                await db_close.commit()
+
         await redis.set(f"wms:job:{job_id}", json.dumps({
             "status": "DONE", "done": len(codes),
             "total": len(codes), "results": results,

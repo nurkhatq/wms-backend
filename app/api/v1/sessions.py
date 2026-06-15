@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, func
+from sqlalchemy import select, update, func, cast, Date, text
 import datetime
 import redis.asyncio as aioredis
 from app.database import get_db
@@ -99,6 +99,30 @@ async def update_session(
         await redis.delete(f"wms:session:active:{session.warehouse_id}")
     await db.commit()
     return {"batch_id": batch_id, "status": status}
+
+
+@router.get("/dates")
+async def list_session_dates(
+    warehouse_id: int | None = None,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    q = (
+        select(
+            cast(ScanSession.started_at, Date).label("day"),
+            func.count().label("session_count"),
+            func.coalesce(func.sum(ScanSession.order_count), 0).label("total_orders"),
+        )
+        .group_by(text("day"))
+        .order_by(text("day DESC"))
+    )
+    if warehouse_id:
+        q = q.where(ScanSession.warehouse_id == warehouse_id)
+    rows = (await db.execute(q)).all()
+    return [
+        {"date": str(r.day), "session_count": r.session_count, "total_orders": int(r.total_orders)}
+        for r in rows
+    ]
 
 
 @router.get("")
@@ -235,6 +259,7 @@ async def get_session_scans(
     page: int = 0,
     page_size: int = 50,
     scan_result: str | None = None,
+    search: str | None = None,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -268,6 +293,8 @@ async def get_session_scans(
     )
     if scan_result:
         base = base.where(ScannedOrder.scan_result == scan_result)
+    if search:
+        base = base.where(ScannedOrder.order_code.ilike(f"%{search}%"))
 
     total = (await db.scalar(select(func.count()).select_from(base.subquery()))) or 0
 
