@@ -12,7 +12,7 @@ from app.config import settings
 
 logger = logging.getLogger("wms.moysklad")
 
-CACHE_TTL = 3600       # 1 hour
+CACHE_TTL = 90000      # 25 hours — refreshed once at start of day + after each demand
 LOOKBACK_DAYS = 14
 
 

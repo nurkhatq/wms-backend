@@ -33,13 +33,15 @@ async def main():
     )
 
     if settings.moysklad_token:
+        # Refresh MoySklad cache once at start of day: 06:00 Almaty = 01:00 UTC
         scheduler.add_job(
             refresh_moysklad,
-            "interval",
-            minutes=60,
-            id="moysklad_cache",
+            "cron",
+            hour=1,
+            minute=0,
+            id="moysklad_cache_daily",
             max_instances=1,
-            misfire_grace_time=60,
+            misfire_grace_time=300,
         )
 
     scheduler.start()
