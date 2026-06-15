@@ -22,18 +22,12 @@ async def login(
     if not user or not verify_password(form.password, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Неверный логин или пароль")
 
-    # Block login if this account already has an active session on another device
-    active = await db.scalar(
-        select(ScanSession).where(
-            ScanSession.started_by == user.id,
-            ScanSession.status == "ACTIVE",
-        )
+    # Auto-close any stale active session so re-login always works
+    await db.execute(
+        update(ScanSession)
+        .where(ScanSession.started_by == user.id, ScanSession.status == "ACTIVE")
+        .values(status="COMPLETED", completed_at=datetime.now(timezone.utc))
     )
-    if active:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="На этом аккаунте уже открыта смена на другом устройстве. Завершите текущую смену перед входом.",
-        )
 
     await db.execute(
         update(User).where(User.id == user.id)
