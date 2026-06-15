@@ -5,6 +5,7 @@ from sqlalchemy import select, update
 from datetime import datetime, timezone
 from app.database import get_db
 from app.models.user import User
+from app.models.scan_session import ScanSession
 from app.services.auth_service import verify_password, create_access_token
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -20,6 +21,19 @@ async def login(
     )
     if not user or not verify_password(form.password, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Неверный логин или пароль")
+
+    # Block login if this account already has an active session on another device
+    active = await db.scalar(
+        select(ScanSession).where(
+            ScanSession.started_by == user.id,
+            ScanSession.status == "ACTIVE",
+        )
+    )
+    if active:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="На этом аккаунте уже открыта смена на другом устройстве. Завершите текущую смену перед входом.",
+        )
 
     await db.execute(
         update(User).where(User.id == user.id)

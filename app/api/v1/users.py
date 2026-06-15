@@ -113,7 +113,8 @@ async def delete_user(
     user = await db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    await db.delete(user)
+    # Soft-delete: deactivate instead of hard delete to preserve session history
+    user.is_active = False
     await db.commit()
 
 

@@ -12,7 +12,7 @@ from app.config import settings
 
 logger = logging.getLogger("wms.moysklad")
 
-CACHE_TTL = 900        # 15 minutes
+CACHE_TTL = 3600       # 1 hour
 LOOKBACK_DAYS = 14
 
 
@@ -92,11 +92,40 @@ async def refresh_cache(redis) -> int:
 
 
 async def get_cached(redis, code: str) -> dict | None:
-    """Return cached MoySklad order dict or None."""
+    """Return cached MoySklad order dict. Falls back to direct API call on cache miss."""
     raw = await redis.get(_key(code))
     if raw:
         return json.loads(raw)
-    return None
+
+    if not settings.moysklad_token:
+        return None
+
+    # Cache miss — look up this specific order directly in MoySklad
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(
+                f"{settings.moysklad_api_url}/entity/customerorder",
+                headers=_headers(),
+                params={"filter": f"name={code}", "limit": 1},
+            )
+            r.raise_for_status()
+            rows = r.json().get("rows", [])
+            if not rows:
+                return None
+            order = rows[0]
+            demands = order.get("demands") or []
+            has_demand = bool(demands)
+            demand_id = demands[0]["meta"]["href"].split("/")[-1] if has_demand else None
+            value = {
+                "meta": order["meta"],
+                "has_demand": has_demand,
+                "demand_id": demand_id,
+            }
+            await redis.set(_key(code), json.dumps(value), ex=CACHE_TTL)
+            return value
+    except Exception as e:
+        logger.warning(f"Direct MS lookup failed for {code}: {e}")
+        return None
 
 
 async def create_demand(order_meta: dict) -> dict:

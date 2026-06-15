@@ -169,3 +169,11 @@ async def run_poll():
         await redis.set(f"wms:poller:last_run:{wh_id}", now.isoformat(), ex=600)
 
     logger.info(f"Kaspi poll complete: {len(raw_orders)} orders processed")
+
+    # Refresh MoySklad cache after every Kaspi poll
+    try:
+        from app.services import moysklad_service
+        ms_count = await moysklad_service.refresh_cache(redis)
+        logger.info(f"MoySklad cache refreshed: {ms_count} orders")
+    except Exception as e:
+        logger.error(f"MoySklad cache refresh failed: {e}")
