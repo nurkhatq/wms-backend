@@ -13,6 +13,7 @@ router = APIRouter(prefix="/orders", tags=["orders"])
 @router.get("")
 async def get_orders(
     status: str | None = Query(None),
+    state: str | None = Query(None),
     assembled: bool | None = Query(None),
     moysklad_status: str | None = Query(None),
     page: int = Query(0, ge=0),
@@ -23,6 +24,8 @@ async def get_orders(
     q = select(KaspiOrder).where(KaspiOrder.warehouse_id == user.warehouse_id)
     if status:
         q = q.where(KaspiOrder.kaspi_status == status)
+    if state:
+        q = q.where(KaspiOrder.kaspi_state == state)
     if assembled is not None:
         q = q.where(KaspiOrder.assembled == assembled)
     if moysklad_status:
