@@ -29,7 +29,7 @@ async def fetch_orders(state: str, client: httpx.AsyncClient) -> list[dict]:
             f"&filter[orders][creationDate][$ge]={start_ms}"
             f"&filter[orders][creationDate][$le]={end_ms}"
         )
-        r = await client.get(f"{BASE_URL}/orders?{qs}", headers=HEADERS, timeout=30)
+        r = await client.get(f"{BASE_URL}/orders?{qs}", headers=HEADERS, timeout=60)
         r.raise_for_status()
         data = r.json()
         batch = data.get("data", [])
@@ -43,13 +43,19 @@ async def fetch_orders(state: str, client: httpx.AsyncClient) -> list[dict]:
 
 
 async def fetch_all_active() -> list[dict]:
+    import logging
     async with httpx.AsyncClient() as client:
         results = []
         for state in ACTIVE_STATES:
-            try:
-                batch = await fetch_orders(state, client)
-                results.extend(batch)
-            except Exception as e:
-                import logging, traceback
-                logging.error(f"Kaspi fetch error state={state}: {type(e).__name__}: {e}\n{traceback.format_exc()}")
+            for attempt in range(3):
+                try:
+                    batch = await fetch_orders(state, client)
+                    results.extend(batch)
+                    logging.info(f"Kaspi: state={state} got {len(batch)} orders")
+                    break
+                except Exception as e:
+                    import traceback
+                    logging.warning(f"Kaspi fetch state={state} attempt={attempt+1}: {type(e).__name__}: {e}")
+                    if attempt == 2:
+                        logging.error(f"Kaspi fetch state={state} failed after 3 attempts\n{traceback.format_exc()}")
         return results
