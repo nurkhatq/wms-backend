@@ -8,15 +8,16 @@ Scan endpoints:
 """
 import json
 import logging
+import uuid
 import datetime
 import redis.asyncio as aioredis
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 
-from app.database import get_db
-from app.redis_client import get_redis
+from app.database import get_db, AsyncSessionLocal
+from app.redis_client import get_redis, get_redis_pool
 from app.models.kaspi_order import KaspiOrder
 from app.models.scan_session import ScanSession
 from app.models.scanned_order import ScannedOrder
@@ -225,28 +226,115 @@ async def release_lock(
 
 # ─── Create demands ───────────────────────────────────────────────────────────
 
+_JOB_TTL = 7200  # 2 hours — enough for any shift
+
+
 class CreateDemandsBody(BaseModel):
     codes: list[str]
     session_batch_id: str | None = None
 
 
+async def _update_scan_demand(db: AsyncSession, session_id: int | None, code: str,
+                               status: str, name: str | None = None):
+    if not session_id:
+        return
+    so = await db.scalar(
+        select(ScannedOrder).where(
+            ScannedOrder.order_code == code,
+            ScannedOrder.session_id == session_id,
+        )
+    )
+    if so:
+        so.demand_status = status
+        if name is not None:
+            so.demand_name = name
+        await db.flush()
+
+
+async def _run_demands_bg(job_id: str, codes: list[str], session_batch_id: str | None,
+                           tsd_code: str):
+    redis = get_redis_pool()
+    results = []
+    any_created = False
+
+    try:
+        async with AsyncSessionLocal() as db:
+            session_id = None
+            if session_batch_id:
+                s = await db.scalar(
+                    select(ScanSession).where(ScanSession.batch_id == session_batch_id)
+                )
+                if s:
+                    session_id = s.id
+
+            for i, code in enumerate(codes):
+                try:
+                    ms = await moysklad_service.get_cached(redis, code)
+
+                    if not ms:
+                        await lock_service.release(redis, code, tsd_code)
+                        await _update_scan_demand(db, session_id, code, "NOT_IN_MS")
+                        await db.commit()
+                        results.append({"code": code, "status": "NOT_IN_MS"})
+
+                    elif ms["has_demand"]:
+                        await lock_service.release(redis, code, tsd_code)
+                        results.append({"code": code, "status": "ALREADY_SHIPPED"})
+
+                    else:
+                        result = await moysklad_service.create_demand(ms["meta"])
+                        ms["has_demand"] = True
+                        ms["demand_id"] = result["demand_id"]
+                        await redis.set(f"wms:ms:{code}", json.dumps(ms), ex=moysklad_service.CACHE_TTL)
+                        await lock_service.release(redis, code, tsd_code)
+                        await _update_scan_demand(db, session_id, code, "CREATED", result["demand_name"])
+                        await db.commit()
+                        any_created = True
+                        results.append({"code": code, "status": "CREATED", "demand_name": result["demand_name"]})
+
+                except Exception as e:
+                    logger.warning(f"Demand failed for {code}: {e}")
+                    try:
+                        await _update_scan_demand(db, session_id, code, "ERROR")
+                        await db.commit()
+                    except Exception:
+                        pass
+                    results.append({"code": code, "status": "ERROR", "detail": str(e)[:100]})
+
+                # Update progress after each order
+                await redis.set(f"wms:job:{job_id}", json.dumps({
+                    "status": "PROCESSING", "done": i + 1,
+                    "total": len(codes), "results": results,
+                }), ex=_JOB_TTL)
+
+        await redis.set(f"wms:job:{job_id}", json.dumps({
+            "status": "DONE", "done": len(codes),
+            "total": len(codes), "results": results,
+        }), ex=_JOB_TTL)
+
+    except Exception as e:
+        logger.error(f"Background demand job {job_id} crashed: {e}")
+        await redis.set(f"wms:job:{job_id}", json.dumps({
+            "status": "ERROR", "done": len(results),
+            "total": len(codes), "results": results,
+        }), ex=_JOB_TTL)
+
+    if any_created:
+        import asyncio
+        asyncio.ensure_future(moysklad_service.refresh_cache(redis))
+
+
 @router.post("/create-demands")
 async def create_demands(
     body: CreateDemandsBody,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     redis: aioredis.Redis = Depends(get_redis),
     user: User = Depends(get_current_user),
 ):
-    """
-    For each locked order code:
-    - Check MoySklad cache (might already be shipped by now)
-    - Create demand via MoySklad API
-    - Release Redis lock
-    - Update ScannedOrder.demand_status / demand_name
-    - Return per-code result
-    """
     if not settings.moysklad_token:
-        return {"results": [{"code": c, "status": "NO_MS_TOKEN"} for c in body.codes]}
+        return {"job_id": None, "status": "ERROR", "total": 0, "done": 0,
+                "results": [{"code": c, "status": "NO_MS_TOKEN"} for c in body.codes]}
 
     tsd_code = user.username
     if user.tsd_device_id:
@@ -254,78 +342,31 @@ async def create_demands(
         if device:
             tsd_code = device.device_code
 
-    # Find session once (needed for ScannedOrder lookup)
-    session = None
-    if body.session_batch_id:
-        session = await db.scalar(
-            select(ScanSession).where(ScanSession.batch_id == body.session_batch_id)
-        )
+    job_id = uuid.uuid4().hex[:12]
+    total = len(body.codes)
 
-    async def _update_demand_status(code: str, demand_status: str, demand_name: str | None = None):
-        """Update ScannedOrder demand tracking fields by order_code + session."""
-        if not session:
-            return
-        so = await db.scalar(
-            select(ScannedOrder).where(
-                ScannedOrder.order_code == code,
-                ScannedOrder.session_id == session.id,
-            )
-        )
-        if so:
-            so.demand_status = demand_status
-            if demand_name is not None:
-                so.demand_name = demand_name
-            await db.flush()
+    await redis.set(f"wms:job:{job_id}", json.dumps({
+        "status": "PROCESSING", "done": 0, "total": total, "results": [],
+    }), ex=_JOB_TTL)
 
-    results = []
-    any_created = False
-    for code in body.codes:
-        ms = await moysklad_service.get_cached(redis, code)
+    background_tasks.add_task(
+        _run_demands_bg, job_id, body.codes, body.session_batch_id, tsd_code
+    )
 
-        if not ms:
-            # MoySklad hasn't imported this order yet
-            await lock_service.release(redis, code, tsd_code)
-            await _update_demand_status(code, "NOT_IN_MS")
-            await db.commit()
-            results.append({"code": code, "status": "NOT_IN_MS"})
-            continue
+    return {"job_id": job_id, "status": "PROCESSING", "total": total, "done": 0, "results": None}
 
-        if ms["has_demand"]:
-            # Already shipped (status changed since scan)
-            await lock_service.release(redis, code, tsd_code)
-            results.append({"code": code, "status": "ALREADY_SHIPPED"})
-            continue
 
-        try:
-            result = await moysklad_service.create_demand(ms["meta"])
-
-            # Update Redis cache so demand status is correct
-            ms["has_demand"] = True
-            ms["demand_id"] = result["demand_id"]
-            await redis.set(f"wms:ms:{code}", json.dumps(ms), ex=moysklad_service.CACHE_TTL)
-
-            await lock_service.release(redis, code, tsd_code)
-            await _update_demand_status(code, "CREATED", result["demand_name"])
-            await db.commit()
-            any_created = True
-            results.append({
-                "code": code,
-                "status": "CREATED",
-                "demand_name": result["demand_name"],
-            })
-
-        except Exception as e:
-            logger.warning(f"Create demand failed for {code}: {e}")
-            await _update_demand_status(code, "ERROR")
-            await db.commit()
-            results.append({"code": code, "status": "ERROR", "detail": str(e)[:100]})
-
-    # Refresh MoySklad cache in background so demand statuses are up to date
-    if any_created:
-        import asyncio
-        asyncio.ensure_future(moysklad_service.refresh_cache(redis))
-
-    return {"results": results}
+@router.get("/demand-job/{job_id}")
+async def get_demand_job(
+    job_id: str,
+    redis: aioredis.Redis = Depends(get_redis),
+    _: User = Depends(get_current_user),
+):
+    raw = await redis.get(f"wms:job:{job_id}")
+    if not raw:
+        return {"job_id": job_id, "status": "NOT_FOUND", "done": 0, "total": 0, "results": None}
+    data = json.loads(raw)
+    return {"job_id": job_id, **data}
 
 
 # ─── Cache management ─────────────────────────────────────────────────────────
