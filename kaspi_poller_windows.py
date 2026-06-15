@@ -22,6 +22,7 @@ VPS_SYNC_TOKEN_FILE = r"d:\otgruzka\wms-backend\vps_sync_token.txt"
 KASPI_HEADERS = {
     "X-Auth-Token": KASPI_TOKEN,
     "Accept": "application/vnd.api+json, application/json",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
 }
 
 ACTIVE_STATES = ["KASPI_DELIVERY", "PICKUP"]
@@ -77,7 +78,7 @@ def fetch_state(state: str) -> list:
             f"&filter[orders][creationDate][$ge]={start_ms}"
             f"&filter[orders][creationDate][$le]={end_ms}"
         )
-        r = requests.get(f"{KASPI_BASE}/orders?{qs}", headers=KASPI_HEADERS, timeout=30)
+        r = requests.get(f"{KASPI_BASE}/orders?{qs}", headers=KASPI_HEADERS, timeout=60)
         r.raise_for_status()
         data = r.json()
         batch = data.get("data", [])
@@ -99,19 +100,30 @@ def get_sync_token() -> str:
         sys.exit(1)
 
 
+CHUNK_SIZE = 500
+
+
 def push_to_vps(orders: list, sync_token: str):
-    payload = {
-        "orders": orders,
-        "synced_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-    }
-    r = requests.post(
-        VPS_URL,
-        json=payload,
-        headers={"x-sync-token": sync_token},
-        timeout=30,
-    )
-    r.raise_for_status()
-    return r.json()
+    synced_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    total_upserted = 0
+    total_events = 0
+
+    for i in range(0, max(len(orders), 1), CHUNK_SIZE):
+        chunk = orders[i:i + CHUNK_SIZE]
+        payload = {"orders": chunk, "synced_at": synced_at}
+        r = requests.post(
+            VPS_URL,
+            json=payload,
+            headers={"x-sync-token": sync_token},
+            timeout=60,
+        )
+        r.raise_for_status()
+        result = r.json()
+        total_upserted += result.get("upserted", 0)
+        total_events += result.get("events", 0)
+        log.info(f"  chunk {i // CHUNK_SIZE + 1}: upserted={result.get('upserted')} events={result.get('events')}")
+
+    return {"upserted": total_upserted, "events": total_events, "synced_at": synced_at}
 
 
 def main():
