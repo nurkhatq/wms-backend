@@ -121,7 +121,6 @@ async def list_sessions(
     q = (
         select(ScanSession, UserOp.full_name)
         .join(UserOp, ScanSession.started_by == UserOp.id)
-        .where(ScanSession.status != "ACTIVE")
         .order_by(ScanSession.started_at.desc())
     )
 
@@ -188,8 +187,6 @@ async def get_session_stats(
     )
     if not session:
         raise HTTPException(status_code=404)
-    if user.role != "admin" and session.warehouse_id != user.warehouse_id:
-        raise HTTPException(status_code=403)
 
     from sqlalchemy.orm import aliased
     UserOp = aliased(User)
@@ -247,9 +244,7 @@ async def get_session_scans(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    if user.role != "admin" and session.warehouse_id != user.warehouse_id:
-        raise HTTPException(status_code=403, detail="Forbidden")
-
+    from sqlalchemy import or_
     base = (
         select(
             ScannedOrder.order_code,
@@ -262,7 +257,14 @@ async def get_session_scans(
             KaspiOrder.total_price,
         )
         .outerjoin(KaspiOrder, ScannedOrder.order_id == KaspiOrder.id)
-        .where(ScannedOrder.session_id == session.id)
+        .where(
+            ScannedOrder.session_id == session.id,
+            # Exclude orders that were scanned then removed (✕) before demand creation
+            or_(
+                ScannedOrder.released_at.is_(None),
+                ScannedOrder.demand_status.isnot(None),
+            ),
+        )
     )
     if scan_result:
         base = base.where(ScannedOrder.scan_result == scan_result)

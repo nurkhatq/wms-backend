@@ -221,6 +221,24 @@ async def release_lock(
         if device:
             tsd_code = device.device_code
     released = await lock_service.release(redis, order_code, tsd_code)
+
+    # Mark the scanned record as removed (so it's excluded from session details)
+    so = await db.scalar(
+        select(ScannedOrder).where(
+            ScannedOrder.order_code == order_code,
+            ScannedOrder.scan_result == "SUCCESS",
+            ScannedOrder.released_at.is_(None),
+            ScannedOrder.demand_status.is_(None),
+        ).order_by(ScannedOrder.id.desc())
+    )
+    if so:
+        so.released_at = datetime.datetime.now(datetime.timezone.utc)
+        await db.execute(
+            update(ScanSession).where(ScanSession.id == so.session_id)
+            .values(order_count=ScanSession.order_count - 1)
+        )
+        await db.commit()
+
     return {"released": released}
 
 
