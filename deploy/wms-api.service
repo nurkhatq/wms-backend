@@ -1,0 +1,22 @@
+[Unit]
+Description=WMS FastAPI Backend
+After=network.target postgresql.service redis-server.service
+Requires=postgresql.service redis-server.service
+
+[Service]
+Type=simple
+User=nurkhat
+Group=nurkhat
+WorkingDirectory=/home/nurkhat/wms-backend
+EnvironmentFile=/home/nurkhat/wms-backend/.env
+ExecStart=/home/nurkhat/wms-backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 2 --loop uvloop
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=wms-api
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
