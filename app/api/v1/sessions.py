@@ -125,9 +125,7 @@ async def list_sessions(
         .order_by(ScanSession.started_at.desc())
     )
 
-    if user.role != "admin":
-        q = q.where(ScanSession.warehouse_id == user.warehouse_id)
-    elif warehouse_id:
+    if warehouse_id:
         q = q.where(ScanSession.warehouse_id == warehouse_id)
 
     if user_id:
