@@ -278,6 +278,7 @@ async def create_demands(
             await db.flush()
 
     results = []
+    any_created = False
     for code in body.codes:
         ms = await moysklad_service.get_cached(redis, code)
 
@@ -306,6 +307,7 @@ async def create_demands(
             await lock_service.release(redis, code, tsd_code)
             await _update_demand_status(code, "CREATED", result["demand_name"])
             await db.commit()
+            any_created = True
             results.append({
                 "code": code,
                 "status": "CREATED",
@@ -317,6 +319,11 @@ async def create_demands(
             await _update_demand_status(code, "ERROR")
             await db.commit()
             results.append({"code": code, "status": "ERROR", "detail": str(e)[:100]})
+
+    # Refresh MoySklad cache in background so demand statuses are up to date
+    if any_created:
+        import asyncio
+        asyncio.ensure_future(moysklad_service.refresh_cache(redis))
 
     return {"results": results}
 
