@@ -106,19 +106,21 @@ async def list_sessions(
     page: int = 0,
     page_size: int = 20,
     warehouse_id: int | None = None,
-    user_search: str | None = None,
+    user_id: int | None = None,
+    search: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     from sqlalchemy.orm import aliased
+    from sqlalchemy import or_, exists
+    from app.models.scanned_order import ScannedOrder
     UserOp = aliased(User)
 
     q = (
         select(ScanSession, UserOp.full_name)
         .join(UserOp, ScanSession.started_by == UserOp.id)
-        # Only completed sessions in history
         .where(ScanSession.status != "ACTIVE")
         .order_by(ScanSession.started_at.desc())
     )
@@ -128,8 +130,18 @@ async def list_sessions(
     elif warehouse_id:
         q = q.where(ScanSession.warehouse_id == warehouse_id)
 
-    if user_search:
-        q = q.where(UserOp.full_name.ilike(f"%{user_search}%"))
+    if user_id:
+        q = q.where(ScanSession.started_by == user_id)
+
+    if search:
+        order_match = exists().where(
+            ScannedOrder.session_id == ScanSession.id,
+            ScannedOrder.order_code.ilike(f"%{search}%")
+        )
+        q = q.where(or_(
+            ScanSession.batch_id.ilike(f"%{search}%"),
+            order_match
+        ))
 
     if date_from:
         try:
