@@ -28,7 +28,7 @@ async def create_session(
 ):
     existing = await db.scalar(
         select(ScanSession).where(
-            ScanSession.warehouse_id == user.warehouse_id,
+            ScanSession.started_by == user.id,
             ScanSession.status == "ACTIVE",
         )
     )
@@ -66,7 +66,7 @@ async def get_active(
 ):
     session = await db.scalar(
         select(ScanSession).where(
-            ScanSession.warehouse_id == user.warehouse_id,
+            ScanSession.started_by == user.id,
             ScanSession.status == "ACTIVE",
         )
     )
