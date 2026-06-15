@@ -50,6 +50,6 @@ async def fetch_all_active() -> list[dict]:
                 batch = await fetch_orders(state, client)
                 results.extend(batch)
             except Exception as e:
-                import logging
-                logging.error(f"Kaspi fetch error state={state}: {e}")
+                import logging, traceback
+                logging.error(f"Kaspi fetch error state={state}: {type(e).__name__}: {e}\n{traceback.format_exc()}")
         return results
