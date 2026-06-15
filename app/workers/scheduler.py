@@ -36,7 +36,7 @@ async def main():
         scheduler.add_job(
             refresh_moysklad,
             "interval",
-            minutes=15,
+            minutes=60,
             id="moysklad_cache",
             max_instances=1,
             misfire_grace_time=60,

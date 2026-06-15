@@ -156,8 +156,11 @@ async def run_poll():
                 "warehouse_id": str(wh_id),
                 "is_cancelling": "1" if parsed["is_cancelling"] else "0",
                 "last_updated": now.isoformat(),
+                "customer_name": parsed.get("customer_name") or "",
+                "total_price": str(parsed.get("total_price") or 0),
+                "express": "1" if parsed.get("express") else "0",
             })
-            await redis.expire(f"wms:order:status:{code}", 600)
+            await redis.expire(f"wms:order:status:{code}", 900)
 
         await db.commit()
 
