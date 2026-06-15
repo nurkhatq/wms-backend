@@ -1,6 +1,6 @@
 """
-Windows Kaspi poller — runs locally every 5 min, pushes to VPS.
-Schedule with: schtasks /create /tn "KaspiPoller" /tr "python d:\otgruzka\wms-backend\kaspi_poller_windows.py" /sc minute /mo 5
+Windows Kaspi poller - runs locally every 5 min, pushes to VPS.
+Schedule with: schtasks /create /tn "KaspiPoller" /tr "python d:\\otgruzka\\wms-backend\\kaspi_poller_windows.py" /sc minute /mo 5
 """
 import requests
 import datetime
