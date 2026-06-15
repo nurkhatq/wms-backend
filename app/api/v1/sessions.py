@@ -98,11 +98,23 @@ async def list_sessions(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    rows = (await db.scalars(
-        select(ScanSession)
-        .where(ScanSession.warehouse_id == user.warehouse_id)
+    from sqlalchemy.orm import aliased
+    UserOp = aliased(User)
+    q = (
+        select(ScanSession, UserOp.full_name)
+        .join(UserOp, ScanSession.started_by == UserOp.id)
         .order_by(ScanSession.started_at.desc())
         .offset(page * page_size).limit(page_size)
-    )).all()
-    return [{"batch_id": s.batch_id, "status": s.status, "order_count": s.order_count,
-             "started_at": s.started_at.isoformat()} for s in rows]
+    )
+    if user.role != "admin":
+        q = q.where(ScanSession.warehouse_id == user.warehouse_id)
+    rows = (await db.execute(q)).all()
+    return [{
+        "batch_id": s.batch_id,
+        "status": s.status,
+        "order_count": s.order_count,
+        "started_at": s.started_at.isoformat(),
+        "completed_at": s.completed_at.isoformat() if s.completed_at else None,
+        "warehouse_id": s.warehouse_id,
+        "user_name": full_name,
+    } for s, full_name in rows]
