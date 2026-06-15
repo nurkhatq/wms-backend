@@ -1,6 +1,6 @@
 import redis.asyncio as aioredis
 
-LOCK_TTL = 1800  # 30 min
+LOCK_TTL = 86400  # 24 hours — workers scan all day, demand created at end of shift
 
 _RELEASE_SCRIPT = """
 local val = redis.call('GET', KEYS[1])
