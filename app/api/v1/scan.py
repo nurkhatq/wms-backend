@@ -12,8 +12,10 @@ from app.models.scan_session import ScanSession
 from app.models.user import User
 from app.models.tsd_device import TsdDevice
 from app.api.deps import get_current_user
-from app.services import lock_service
+from app.services import lock_service, moysklad_service
+from app.config import settings
 
+logger = logging.getLogger("wms.scan")
 router = APIRouter(prefix="/scan", tags=["scan"])
 
 
@@ -95,6 +97,26 @@ async def scan_lock(
         )
     await db.commit()
 
+    # Attempt MoySklad demand creation (non-blocking — failures don't affect scan result)
+    ms_status = "SKIP"
+    ms_demand_id = None
+    if settings.moysklad_token:
+        try:
+            ms = await moysklad_service.sync_demand(body.order_code)
+            ms_status = ms["status"]
+            ms_demand_id = ms.get("demand_id")
+            if ms_status in ("CREATED", "EXISTS"):
+                await db.execute(
+                    update(KaspiOrder).where(KaspiOrder.id == order.id).values(
+                        moysklad_status="SYNCED",
+                        moysklad_demand_id=ms_demand_id,
+                        moysklad_synced_at=datetime.datetime.now(datetime.timezone.utc),
+                    )
+                )
+                await db.commit()
+        except Exception as e:
+            logger.warning(f"MoySklad sync error for {body.order_code}: {e}")
+
     return {
         "result": "SUCCESS",
         "order_code": body.order_code,
@@ -105,7 +127,7 @@ async def scan_lock(
             "customer_name": order.customer_name,
             "total_price": float(order.total_price or 0),
             "assembled": order.assembled,
-            "moysklad_status": order.moysklad_status,
+            "moysklad_status": ms_status,
             "express": order.express,
             "waybill_number": order.waybill_number,
         },
