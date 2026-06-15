@@ -22,14 +22,14 @@ async def fetch_orders(state: str, client: httpx.AsyncClient) -> list[dict]:
     orders = []
     page = 0
     while True:
-        params = {
-            "page[number]": page,
-            "page[size]": 100,
-            "filter[orders][state]": state,
-            "filter[orders][creationDate][$ge]": start_ms,
-            "filter[orders][creationDate][$le]": end_ms,
-        }
-        r = await client.get(f"{BASE_URL}/orders", params=params, headers=HEADERS, timeout=30)
+        # httpx encodes brackets — build raw query string to preserve them
+        qs = (
+            f"page[number]={page}&page[size]=100"
+            f"&filter[orders][state]={state}"
+            f"&filter[orders][creationDate][$ge]={start_ms}"
+            f"&filter[orders][creationDate][$le]={end_ms}"
+        )
+        r = await client.get(f"{BASE_URL}/orders?{qs}", headers=HEADERS, timeout=30)
         r.raise_for_status()
         data = r.json()
         batch = data.get("data", [])
